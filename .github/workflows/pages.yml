@@ -1,0 +1,50 @@
+# Publishes the app to GitHub Pages on every push to the development branch.
+# There is nothing to build — the site is the repository — so this only collects the
+# files the browser needs and hands them to Pages.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [claude/grammar-checking-app-d92orr]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # enablement: true switches Pages on the first time, so nobody has to visit
+      # the repository settings to get the site running.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Collect the static site
+        run: |
+          mkdir -p _site
+          cp -r index.html manifest.webmanifest sw.js styles src icons _site/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
