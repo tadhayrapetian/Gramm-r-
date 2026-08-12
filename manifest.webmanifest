@@ -1,0 +1,26 @@
+{
+  "name": "Grammar Ink — английская грамматика от руки",
+  "short_name": "Grammar Ink",
+  "description": "Пиши ответ от руки стилусом или пальцем — приложение читает почерк и проверяет само. Работает без интернета.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#eef2f0",
+  "theme_color": "#0e8074",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
