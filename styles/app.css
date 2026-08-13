@@ -338,6 +338,7 @@ button {
 .paper {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--paper);
   padding-bottom: calc(var(--dock-height) + 20px);
   -webkit-overflow-scrolling: touch;
@@ -487,6 +488,10 @@ button {
   position: relative;
   width: 100%;
   touch-action: none;
+  /* Stop iPadOS from turning a slow stroke into a text selection or a callout. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .ink-canvas {
@@ -570,9 +575,27 @@ button {
 
 .text-button.inline {
   align-self: flex-start;
-  padding: 4px 0;
+  padding: 6px 0;
   color: var(--teal);
   text-decoration: underline;
+}
+
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.text-button.inline.strong {
+  font-weight: 650;
+  font-size: 15px;
+  text-decoration: none;
+  border: 1.5px solid var(--teal-soft);
+  background: var(--teal-tint);
+  border-radius: 10px;
+  padding: 8px 14px;
 }
 
 .options {

@@ -23,7 +23,8 @@ export class InkLine {
     this.tool = tool;
     this.strokes = [];
     this.history = [];
-    this.current = null;
+    this.active = new Map(); // pointerId → stroke being drawn right now
+    this.erasing = null;
     this.penSeen = false; // once a stylus writes, ignore the palm
 
     this.el = document.createElement('div');
@@ -40,7 +41,7 @@ export class InkLine {
       this.canvas.addEventListener('pointermove', this.onMove);
       this.canvas.addEventListener('pointerup', this.onUp);
       this.canvas.addEventListener('pointercancel', this.onUp);
-      this.canvas.addEventListener('pointerleave', this.onUp);
+      this.canvas.addEventListener('lostpointercapture', this.onUp);
     }
 
     this.observer = new ResizeObserver(() => this.resize());
@@ -78,44 +79,79 @@ export class InkLine {
     };
   }
 
+  /**
+   * A hand resting on a tablet produces its own pointers alongside the stylus, so
+   * every pointer gets its own in-progress stroke. Sharing one would let the palm's
+   * pointerup finish the pen's stroke — the pen would simply stop drawing mid-letter.
+   */
   ignores(event) {
-    // A stylus and a resting palm arrive together; once we have seen the stylus,
-    // touch input on this line is the palm.
-    if (event.pointerType === 'pen') {
-      this.penSeen = true;
-      return false;
-    }
     return this.penSeen && event.pointerType === 'touch';
   }
 
+  /** The pen has landed: anything the hand drew just before it was the palm. */
+  dropPalmMarks() {
+    for (const [id, stroke] of this.active) {
+      if (stroke.pointerType === 'touch') this.active.delete(id);
+    }
+    const now = performance.now();
+    const palm = this.strokes.filter((s) => s.pointerType === 'touch' && now - s.finishedAt < 900);
+    if (palm.length) {
+      this.strokes = this.strokes.filter((s) => !palm.includes(s));
+      this.history.push({ type: 'erase', strokes: palm });
+      this.redraw();
+    }
+  }
+
   onDown = (event) => {
-    if (this.readOnly || this.ignores(event)) return;
+    if (this.readOnly) return;
+    if (event.pointerType === 'pen' && !this.penSeen) {
+      this.penSeen = true;
+      this.dropPalmMarks();
+    } else if (event.pointerType === 'pen') {
+      this.dropPalmMarks();
+    } else if (this.ignores(event)) {
+      return;
+    }
+
     event.preventDefault();
-    this.canvas.setPointerCapture(event.pointerId);
+    try {
+      this.canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is a nicety; without it the stroke still tracks the pointer.
+    }
+
     const point = this.point(event);
     if (this.tool === 'eraser') {
-      this.erasing = { removed: [] };
+      if (!this.erasing) this.erasing = { removed: [], pointerId: event.pointerId };
       this.eraseAt(point);
       return;
     }
-    this.current = { tool: this.tool, points: [point] };
+    this.active.set(event.pointerId, {
+      tool: this.tool,
+      pointerType: event.pointerType,
+      points: [point],
+    });
   };
 
   onMove = (event) => {
     if (this.readOnly || this.ignores(event)) return;
-    if (this.erasing) {
+    if (this.erasing && this.erasing.pointerId === event.pointerId) {
       this.eraseAt(this.point(event));
       return;
     }
-    if (!this.current) return;
+    const stroke = this.active.get(event.pointerId);
+    if (!stroke) return;
     event.preventDefault();
-    const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [event];
-    for (const raw of events) this.current.points.push(this.point(raw));
+    // Coalesced events give the full path between frames, but the list comes back
+    // empty in some browsers and for synthetic input — then the move itself is the path.
+    const coalesced = event.getCoalescedEvents ? event.getCoalescedEvents() : [];
+    const events = coalesced.length ? coalesced : [event];
+    for (const raw of events) stroke.points.push(this.point(raw));
     this.redraw();
   };
 
   onUp = (event) => {
-    if (this.erasing) {
+    if (this.erasing && this.erasing.pointerId === event.pointerId) {
       const removed = this.erasing.removed;
       this.erasing = null;
       if (removed.length) {
@@ -124,13 +160,15 @@ export class InkLine {
       }
       return;
     }
-    if (!this.current) return;
-    const stroke = this.current;
-    this.current = null;
+
+    const stroke = this.active.get(event.pointerId);
+    if (!stroke) return;
+    this.active.delete(event.pointerId);
     if (stroke.points.length === 1) {
       // A tap still leaves a dot — that is how the dot on an `i` gets written.
       stroke.points.push({ ...stroke.points[0], x: stroke.points[0].x + 0.6 });
     }
+    stroke.finishedAt = performance.now();
     this.strokes.push(stroke);
     this.history.push({ type: 'add', stroke });
     this.changed();
@@ -185,6 +223,11 @@ export class InkLine {
     return this.strokes.length === 0;
   }
 
+  /** Ink the learner has drawn but not yet lifted the pen from. */
+  isWriting() {
+    return this.active.size > 0;
+  }
+
   lock() {
     this.readOnly = true;
     this.el.dataset.locked = 'true';
@@ -204,7 +247,7 @@ export class InkLine {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (this.guides) this.drawGuides(ctx, this.el.clientWidth || width);
     for (const stroke of this.strokes) this.drawStroke(ctx, stroke);
-    if (this.current) this.drawStroke(ctx, this.current);
+    for (const stroke of this.active.values()) this.drawStroke(ctx, stroke);
   }
 
   drawGuides(ctx, width) {

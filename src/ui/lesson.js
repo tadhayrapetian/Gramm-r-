@@ -10,7 +10,7 @@ import { answerWords, findUnit } from '../data/lessons.js';
 import { COMMON_WORDS } from '../data/lexicon.js';
 import { iconMarkup } from '../data/icons.js';
 import { pick, t } from '../i18n.js';
-import { getState, setSetting, taskDone, unitFinished, unitProgress, resetUnit } from '../state.js';
+import { getState, saveHand, setSetting, taskDone, unitFinished, unitProgress, resetUnit } from '../state.js';
 import { clear, h, sentence } from './dom.js';
 
 const IDLE_BEFORE_CHECK = 1200; // ms after the pen stops — people pause between letters
@@ -24,7 +24,32 @@ function accepts(task, text) {
   return wanted.includes(normalise(text));
 }
 
-export function lessonScreen(unitId, { recognizer, navigate }) {
+/**
+ * Store the ink as the learner's own letterforms, so the next word in their hand
+ * reads better. Only done when the cut of the ink matches the answer letter for
+ * letter — teaching the reader a wrongly-cut shape would make it worse, not better.
+ */
+function learnLetterforms(reading, task, reloadHand) {
+  const words = reading?.words;
+  if (!words || !reloadHand) return false;
+  const targets = normalise(task.answer).split(' ');
+  if (words.length !== targets.length) return false;
+  if (words.some((word, i) => word.letters.length !== targets[i].length)) return false;
+
+  let taught = 0;
+  words.forEach((word, i) => {
+    [...targets[i]].forEach((letter, j) => {
+      if (!/[a-z']/.test(letter)) return;
+      const known = getState().hand[letter] || [];
+      saveHand(letter, [...known, word.letters[j].strokes].slice(-3)); // keep the last three
+      taught++;
+    });
+  });
+  if (taught) reloadHand();
+  return taught > 0;
+}
+
+export function lessonScreen(unitId, { recognizer, navigate, reloadHand }) {
   const unit = findUnit(unitId);
   if (!unit) {
     navigate('#/');
@@ -261,7 +286,11 @@ export function lessonScreen(unitId, { recognizer, navigate }) {
       // Writing again withdraws the previous reading.
       delete row.el.dataset.state;
       status.dataset.state = 'thinking';
-      timer = setTimeout(() => check({ manual: false }), IDLE_BEFORE_CHECK);
+      timer = setTimeout(() => {
+        // Still mid-stroke: the word is not finished, so wait rather than read half of it.
+        if (line.isWriting()) return scheduleCheck();
+        check({ manual: false });
+      }, IDLE_BEFORE_CHECK);
     }
 
     function check({ manual }) {
@@ -301,14 +330,17 @@ export function lessonScreen(unitId, { recognizer, navigate }) {
         row.el.dataset.state = 'wrong';
         clear(status).append(feedback(false, task, null, reading.read));
         status.append(
-          h('button', {
-            class: 'text-button inline',
-            onClick: () => {
-              settled = true;
-              clear(status).append(feedback(false, task, task.answer, reading.read));
-              completeRow(row, task, false);
-            },
-          }, t('showAnswer')),
+          h('div', { class: 'status-actions' },
+            insistButton(reading),
+            h('button', {
+              class: 'text-button inline',
+              onClick: () => {
+                settled = true;
+                clear(status).append(feedback(false, task, task.answer, reading.read));
+                completeRow(row, task, false);
+              },
+            }, t('showAnswer')),
+          ),
         );
         return;
       }
@@ -320,10 +352,28 @@ export function lessonScreen(unitId, { recognizer, navigate }) {
         status.append(
           h('span', { class: 'status-text' }, `⋯ ${t('unsure')}`),
           h('span', { class: 'status-hint' }, t('unsureHint')),
+          h('div', { class: 'status-actions' }, insistButton(reading)),
         );
       } else {
         status.append(h('span', { class: 'status-text' }, '⋯'));
       }
+    }
+
+    /**
+     * The learner's word against the reader's. They are the one who can see the page,
+     * so their word wins — and the app takes the correction as a writing sample.
+     */
+    function insistButton(reading) {
+      return h('button', {
+        class: 'text-button inline strong',
+        onClick: () => {
+          settled = true;
+          const learned = learnLetterforms(reading, task, reloadHand);
+          clear(status).append(feedback(true, task, null));
+          if (learned) status.append(h('span', { class: 'status-hint' }, `✎ ${t('learned')}`));
+          completeRow(row, task, true);
+        },
+      }, t('iWroteRight'));
     }
 
     // Tools live in the dock so they stay reachable with a thumb.
@@ -364,6 +414,7 @@ export function lessonScreen(unitId, { recognizer, navigate }) {
           toolButton('pen', t('pen'), '🖋'),
           toolButton('eraser', t('eraser'), '◻'),
           h('button', { class: 'tool', title: t('undo'), onClick: () => line.undo() }, '↺'),
+          h('button', { class: 'tool', title: t('clear'), onClick: () => line.clear() }, '🗑'),
           inputToggle,
         ),
         h('button', { class: 'button', onClick: () => check({ manual: true }) }, t('check')),
