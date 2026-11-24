@@ -1,0 +1,103 @@
+# Builds vdl.app for Apple Silicon Macs, packs it into a .dmg and publishes it
+# as the "vdl-latest" GitHub Release. Runs on every push that touches the app.
+
+name: Build vdl for macOS
+
+on:
+  push:
+    branches: [claude/bold-fermi-ei128a]
+    paths:
+      - "video-downloader/**"
+      - ".github/workflows/vdl-macos.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest  # Apple Silicon (arm64)
+    defaults:
+      run:
+        working-directory: video-downloader
+    env:
+      FFMPEG_BASE: https://ffmpeg.martin-riedl.de/download/macos/arm64/1795207104_9.1
+      FFMPEG_SHA256: 1f66e9a690a7f1c9e60b012379f8869c11818d1797f45b21dbb2f2564ba61ae1
+      FFPROBE_SHA256: 6ef2df5f575042923a28537ab37adf936f28bf3e7b85de23a1447ed447ec1dbd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pillow
+          python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+
+      - name: Fetch static ffmpeg + ffprobe (arm64)
+        run: |
+          mkdir -p bin
+          curl -fsSL -o ffmpeg.zip  "$FFMPEG_BASE/ffmpeg.zip"
+          curl -fsSL -o ffprobe.zip "$FFMPEG_BASE/ffprobe.zip"
+          echo "$FFMPEG_SHA256  ffmpeg.zip"   | shasum -a 256 -c -
+          echo "$FFPROBE_SHA256  ffprobe.zip" | shasum -a 256 -c -
+          unzip -o -q ffmpeg.zip  -d bin
+          unzip -o -q ffprobe.zip -d bin
+          chmod +x bin/ffmpeg bin/ffprobe
+          bin/ffmpeg -version | head -1
+
+      - name: Build vdl.app
+        run: |
+          pyinstaller --noconfirm --clean --windowed \
+            --name vdl \
+            --icon packaging/icon.png \
+            --osx-bundle-identifier io.github.vdl \
+            --add-binary "bin/ffmpeg:." \
+            --add-binary "bin/ffprobe:." \
+            --collect-submodules yt_dlp \
+            --hidden-import gui \
+            app.py
+          # ad-hoc подпись всего бандла, чтобы macOS на M-чипах его запускала
+          codesign --force --deep --sign - dist/vdl.app
+          codesign --verify --deep dist/vdl.app
+
+      - name: Self-test the built app
+        run: dist/vdl.app/Contents/MacOS/vdl --selftest
+
+      - name: Pack .dmg
+        run: |
+          mkdir -p dmg
+          cp -R dist/vdl.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname vdl -srcfolder dmg -ov -format UDZO vdl-macos-arm64.dmg
+          ls -lh vdl-macos-arm64.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vdl-macos-arm64
+          path: video-downloader/vdl-macos-arm64.dmg
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: vdl-latest
+          name: vdl для macOS (Apple Silicon)
+          target_commitish: ${{ github.sha }}
+          prerelease: false
+          make_latest: true
+          files: video-downloader/vdl-macos-arm64.dmg
+          body: |
+            Загрузчик видео vdl для Mac с чипом M1/M2/M3/M4.
+
+            Установка: откройте `vdl-macos-arm64.dmg`, перетащите **vdl** в «Программы».
+
+            Приложение не подписано платным сертификатом Apple, поэтому при первом
+            запуске macOS его заблокирует. Разблокировать один раз:
+            «Системные настройки» → «Конфиденциальность и безопасность» →
+            внизу «vdl заблокировано…» → **«Всё равно открыть»**.
+            Или в Терминале: `xattr -dr com.apple.quarantine /Applications/vdl.app`
+
+            Сборка из коммита ${{ github.sha }}.

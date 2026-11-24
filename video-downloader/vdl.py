@@ -20,9 +20,31 @@ Instagram, X/Twitter, Reddit, Dailymotion и т.д.), прямые ссылки 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
+
+FROZEN = bool(getattr(sys, "frozen", False))  # запущено как собранное приложение (.app)
+
+
+def data_dir() -> Path:
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "vdl"
+
+
+# В собранном приложении pip недоступен, поэтому свежий yt-dlp скачивается
+# отдельным файлом (кнопка «Обновить движок») и подключается раньше встроенного.
+ENGINE_FILE = data_dir() / "yt-dlp.zip"
+ENGINE_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+if FROZEN and ENGINE_FILE.is_file():
+    sys.path.insert(0, str(ENGINE_FILE))
 
 try:
     import yt_dlp
@@ -34,8 +56,34 @@ except ImportError:  # pragma: no cover
 DRM_MARKERS = ("drm", "widevine", "playready", "fairplay")
 
 
-class DRMProtectedError(Exception):
-    """Видео защищено DRM и не может быть сохранено."""
+def engine_version() -> str:
+    return yt_dlp.version.__version__
+
+
+def update_engine() -> str:
+    """Скачивает последнюю версию yt-dlp. Подхватывается после перезапуска."""
+    ENGINE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ENGINE_FILE.with_suffix(".part")
+    with urllib.request.urlopen(ENGINE_URL, timeout=60) as r, open(tmp, "wb") as f:
+        shutil.copyfileobj(r, f)
+    tmp.replace(ENGINE_FILE)
+    return str(ENGINE_FILE)
+
+
+def find_ffmpeg() -> str | None:
+    """Ищет ffmpeg: внутри приложения, в PATH, в Homebrew."""
+    candidates = []
+    if FROZEN:
+        candidates.append(Path(getattr(sys, "_MEIPASS", "")) / "ffmpeg")
+        candidates.append(Path(sys.executable).parent / "ffmpeg")
+    found = shutil.which("ffmpeg")
+    if found:
+        candidates.append(Path(found))
+    candidates += [Path("/opt/homebrew/bin/ffmpeg"), Path("/usr/local/bin/ffmpeg")]
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
 
 
 def build_options(
@@ -50,8 +98,10 @@ def build_options(
     template: str = "%(title).150B [%(id)s].%(ext)s",
     progress_hook=None,
     quiet: bool = False,
+    logger=None,
 ) -> dict:
-    has_ffmpeg = shutil.which("ffmpeg") is not None
+    ffmpeg = find_ffmpeg()
+    has_ffmpeg = ffmpeg is not None
     height = f"[height<={quality}]" if quality else ""
 
     if audio_only:
@@ -75,8 +125,11 @@ def build_options(
         "windowsfilenames": True,
         "quiet": quiet,
         "no_warnings": quiet,
+        "noprogress": quiet,
         "allow_unplayable_formats": False,  # никогда не тянем зашифрованные потоки
     }
+    if has_ffmpeg:
+        opts["ffmpeg_location"] = ffmpeg
     if has_ffmpeg and not audio_only:
         opts["merge_output_format"] = "mp4"
 
@@ -104,6 +157,9 @@ def build_options(
         opts["cookiefile"] = cookies_file
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
+    if logger is not None:
+        # в приложении без терминала stdout/stderr может не быть — пишем через logger
+        opts["logger"] = logger
     return opts
 
 
@@ -147,10 +203,12 @@ def _fmt_duration(sec) -> str:
     return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
 
-def search(query: str, site: str = "youtube", limit: int = 10) -> list[dict]:
+def search(query: str, site: str = "youtube", limit: int = 10, logger=None) -> list[dict]:
     """Ищет видео на открытой площадке. Возвращает [{title, url, duration, channel}]."""
     key, _ = SEARCH_SITES[site]
     opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True}
+    if logger is not None:
+        opts["logger"] = logger
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"{key}{limit}:{query}", download=False)
     results = []
@@ -280,7 +338,7 @@ def main(argv=None) -> int:
             list_formats(u, **common)
         return 0
 
-    if not shutil.which("ffmpeg"):
+    if not find_ffmpeg():
         print("! ffmpeg не найден: максимальное качество и конвертация звука недоступны.\n"
               "  Установите ffmpeg (https://ffmpeg.org) для лучшего результата.\n")
 

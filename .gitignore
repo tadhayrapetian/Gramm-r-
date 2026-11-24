@@ -2,3 +2,8 @@ node_modules/
 .DS_Store
 __pycache__/
 video-downloader/downloads/
+video-downloader/build/
+video-downloader/dist/
+video-downloader/bin/
+video-downloader/*.spec
+video-downloader/*.dmg
