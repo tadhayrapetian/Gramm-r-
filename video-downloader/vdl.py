@@ -14,6 +14,7 @@ Instagram, X/Twitter, Reddit, Dailymotion и т.д.), прямые ссылки 
     python vdl.py URL -q 720             # не выше 720p
     python vdl.py URL --audio            # только звук в mp3
     python vdl.py URL --cookies-from-browser chrome   # видео из вашего аккаунта
+    python vdl.py -S "название фильма"   # найти на YouTube и выбрать
     python vdl.py --gui                  # оконный интерфейс
 """
 from __future__ import annotations
@@ -129,6 +130,92 @@ def download(urls: list[str], **kwargs) -> list[str]:
     return errors
 
 
+SEARCH_SITES = {
+    "youtube": ("ytsearch", "YouTube"),
+    "soundcloud": ("scsearch", "SoundCloud"),
+    "bilibili": ("bilisearch", "Bilibili"),
+    "nico": ("nicosearch", "Niconico"),
+}
+
+
+def _fmt_duration(sec) -> str:
+    if not sec:
+        return "--:--"
+    sec = int(sec)
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
+
+
+def search(query: str, site: str = "youtube", limit: int = 10) -> list[dict]:
+    """Ищет видео на открытой площадке. Возвращает [{title, url, duration, channel}]."""
+    key, _ = SEARCH_SITES[site]
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"{key}{limit}:{query}", download=False)
+    results = []
+    for e in info.get("entries") or []:
+        if not e:
+            continue
+        url = e.get("webpage_url") or e.get("url")
+        if site == "youtube" and e.get("id"):
+            url = f"https://www.youtube.com/watch?v={e['id']}"
+        results.append({
+            "title": e.get("title") or "(без названия)",
+            "url": url,
+            "duration": e.get("duration"),
+            "channel": e.get("channel") or e.get("uploader") or "",
+        })
+    return results
+
+
+def parse_selection(text: str, count: int) -> list[int]:
+    """'1,3,5-7' / 'all' / 'все' -> индексы с нуля."""
+    text = text.strip().lower()
+    if text in ("all", "все", "*"):
+        return list(range(count))
+    picked: list[int] = []
+    for part in text.replace(" ", ",").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            rng = range(int(a), int(b) + 1)
+        else:
+            rng = [int(part)]
+        for n in rng:
+            if 1 <= n <= count and n - 1 not in picked:
+                picked.append(n - 1)
+    return picked
+
+
+def interactive_search(query: str, site: str, limit: int) -> list[str]:
+    name = SEARCH_SITES[site][1]
+    print(f"Ищу «{query}» на {name}…\n")
+    try:
+        results = search(query, site, limit)
+    except DownloadError as exc:
+        print(f"Поиск не удался: {exc}", file=sys.stderr)
+        return []
+    if not results:
+        print("Ничего не найдено.")
+        return []
+    for i, r in enumerate(results, 1):
+        ch = f" — {r['channel']}" if r["channel"] else ""
+        print(f"{i:>2}. [{_fmt_duration(r['duration']):>7}] {r['title']}{ch}")
+        print(f"    {r['url']}")
+    try:
+        answer = input("\nНомера для загрузки (например 1,3 или 2-4, all — все, Enter — отмена): ")
+    except (EOFError, KeyboardInterrupt):
+        return []
+    try:
+        idx = parse_selection(answer, len(results))
+    except ValueError:
+        print("Не понял номера.")
+        return []
+    return [results[i]["url"] for i in idx]
+
+
 def list_formats(url: str, **kwargs) -> None:
     opts = build_options(**kwargs)
     opts["listformats"] = True
@@ -155,6 +242,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="взять вход в аккаунт из браузера: chrome, firefox, edge, opera, brave…")
     p.add_argument("--cookies", metavar="FILE", help="cookies.txt в формате Netscape")
     p.add_argument("-F", "--formats", action="store_true", help="показать доступные форматы и выйти")
+    p.add_argument("-S", "--search", metavar="ЗАПРОС",
+                   help="найти видео по названию на открытой площадке и выбрать, что скачать")
+    p.add_argument("--site", default="youtube", choices=list(SEARCH_SITES),
+                   help="где искать (по умолч. youtube)")
+    p.add_argument("-n", "--results", type=int, default=10, help="сколько результатов показать")
     p.add_argument("--gui", action="store_true", help="открыть оконный интерфейс")
     return p.parse_args(argv)
 
@@ -170,6 +262,10 @@ def main(argv=None) -> int:
     if args.file:
         lines = Path(args.file).read_text(encoding="utf-8").splitlines()
         urls += [l.strip() for l in lines if l.strip() and not l.lstrip().startswith("#")]
+    if args.search:
+        urls += interactive_search(args.search, args.site, args.results)
+        if not urls:
+            return 0
     if not urls:
         try:
             urls = [input("Вставьте ссылку на видео: ").strip()]

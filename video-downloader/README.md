@@ -27,6 +27,19 @@ python vdl.py URL --cookies-from-browser chrome    # видео, доступн�
 python vdl.py --gui                                # окно с кнопкой «Скачать»
 ```
 
+## Поиск по названию
+
+Не знаете ссылку или видео есть на открытой площадке — найдите его прямо из программы:
+
+```bash
+python vdl.py -S "название"                        # поиск на YouTube, 10 результатов
+python vdl.py -S "название" -n 20                  # больше результатов
+python vdl.py -S "название" --site soundcloud -a   # музыка с SoundCloud в mp3
+```
+Площадки: `youtube`, `soundcloud`, `bilibili`, `nico`. Программа покажет список
+(название, длительность, канал, ссылка) и спросит номера: `1`, `1,3`, `2-5` или `all`.
+Остальные параметры (`-q`, `-a`, `-s`, `-o`) работают как обычно.
+
 ## Что не скачивается
 
 Видео под DRM (Widevine / PlayReady / FairPlay): Netflix, Disney+, Amazon Prime,
